@@ -19,7 +19,7 @@ public final class YouTubeAdCloserService extends AccessibilityService {
     private static final String TAG = "YTAdCloser";
     private static final String YOUTUBE_PACKAGE = "com.google.android.youtube.tv";
 
-    private static final long SCREEN_SCAN_INTERVAL_MS = 3000;
+    private static final long SCREEN_SCAN_INTERVAL_MS = 1400;
     private static final long CLICK_DEBOUNCE_MS = 5000;
 
     // On the N1's 1920x1080 Cobalt UI, the active Skip button is a large white
