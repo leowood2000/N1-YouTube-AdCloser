@@ -14,6 +14,7 @@ import java.io.IOException;
 public final class MainActivity extends Activity {
     private TextView statusView;
     private boolean rootRequested;
+    private Boolean rootGranted;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -35,11 +36,20 @@ public final class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        updateStatus();
+        requestRootInForeground();
+    }
+
+    private void updateStatus() {
         boolean enabled = isServiceEnabled();
         statusView.setText(enabled
                 ? getString(R.string.status_enabled)
                 : getString(R.string.status_disabled));
-        requestRootInForeground();
+        if (rootGranted != null) {
+            statusView.append(rootGranted
+                    ? getString(R.string.root_granted)
+                    : getString(R.string.root_denied));
+        }
     }
 
     private void requestRootInForeground() {
@@ -63,10 +73,8 @@ public final class MainActivity extends Activity {
                 }
             }
 
-            final boolean rootGranted = granted;
-            runOnUiThread(() -> statusView.append(rootGranted
-                    ? getString(R.string.root_granted)
-                    : getString(R.string.root_denied)));
+            rootGranted = granted;
+            runOnUiThread(this::updateStatus);
         }, "RootPermissionRequest").start();
     }
 
@@ -79,10 +87,10 @@ public final class MainActivity extends Activity {
         }
 
         ComponentName component = new ComponentName(this, YouTubeAdCloserService.class);
-        String expected = component.flattenToString();
         String[] components = enabledServices.split(":");
         for (String value : components) {
-            if (expected.equalsIgnoreCase(value)) {
+            ComponentName enabledComponent = ComponentName.unflattenFromString(value);
+            if (component.equals(enabledComponent)) {
                 return true;
             }
         }
