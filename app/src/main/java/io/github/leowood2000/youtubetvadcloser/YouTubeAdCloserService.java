@@ -34,6 +34,7 @@ public final class YouTubeAdCloserService extends AccessibilityService {
     private static final double REGION_TOP = 0.875;
     private static final double REGION_BOTTOM = 0.93;
     private static final double ACTIVE_WHITE_RATIO = 0.55;
+    private static final double PLAYBACK_SURFACE_DARK_RATIO = 0.90;
 
     // The CC icon is filled white while captions are enabled and is only a
     // white outline while they are disabled.
@@ -101,7 +102,13 @@ public final class YouTubeAdCloserService extends AccessibilityService {
         boolean shouldCheckCaptions = false;
         try {
             double whiteRatio = skipButtonWhiteRatio(screenshot);
-            boolean skipButtonActive = whiteRatio >= ACTIVE_WHITE_RATIO;
+            double darkRatio = playbackSurfaceDarkRatio(screenshot);
+            boolean mainControlsVisible =
+                    mainTimelineBrightRatio(screenshot)
+                            >= MAIN_TIMELINE_BRIGHT_RATIO;
+            boolean skipButtonActive = whiteRatio >= ACTIVE_WHITE_RATIO
+                    && darkRatio >= PLAYBACK_SURFACE_DARK_RATIO
+                    && !mainControlsVisible;
 
             if (!skipButtonActive) {
                 skipButtonLatched = false;
@@ -200,6 +207,31 @@ public final class YouTubeAdCloserService extends AccessibilityService {
             }
         }
         return sampled == 0 ? 0 : (double) white / sampled;
+    }
+
+    private static double playbackSurfaceDarkRatio(Bitmap bitmap) {
+        int width = bitmap.getWidth();
+        int height = bitmap.getHeight();
+        int left = (int) (width * 0.20);
+        int right = (int) (width * 0.80);
+        int top = (int) (height * 0.20);
+        int bottom = (int) (height * 0.58);
+
+        int sampled = 0;
+        int dark = 0;
+        for (int y = top; y < bottom; y += 2) {
+            for (int x = left; x < right; x += 2) {
+                int color = bitmap.getPixel(x, y);
+                int red = (color >> 16) & 0xff;
+                int green = (color >> 8) & 0xff;
+                int blue = color & 0xff;
+                sampled++;
+                if (red <= 35 && green <= 35 && blue <= 35) {
+                    dark++;
+                }
+            }
+        }
+        return sampled == 0 ? 0 : (double) dark / sampled;
     }
 
     private void checkAndRestoreCaptions(long now) {
