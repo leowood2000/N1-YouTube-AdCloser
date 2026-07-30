@@ -33,6 +33,7 @@ public final class YouTubeAdCloserService extends AccessibilityService {
     private ScheduledExecutorService screenScanner;
     private long lastClickAt;
     private boolean rootFailureLogged;
+    private boolean skipButtonLatched;
 
     @Override
     protected void onServiceConnected() {
@@ -78,11 +79,16 @@ public final class YouTubeAdCloserService extends AccessibilityService {
         try {
             double whiteRatio = skipButtonWhiteRatio(screenshot);
             if (whiteRatio < ACTIVE_WHITE_RATIO) {
+                skipButtonLatched = false;
+                return;
+            }
+            if (skipButtonLatched) {
                 return;
             }
 
             if (runRootCommand("input keyevent 23")) {
                 lastClickAt = now;
+                skipButtonLatched = true;
                 Log.i(TAG, String.format(
                         Locale.ROOT,
                         "Skipped ad with DPAD_CENTER (white ratio %.3f)",
