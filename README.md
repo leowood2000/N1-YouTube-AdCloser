@@ -1,22 +1,24 @@
 # N1 YouTube TV Ad Closer
 
-A small Android AccessibilityService for Android TV boxes that only monitors the
-official YouTube TV package (`com.google.android.youtube.tv`).
+A small root-assisted Android AccessibilityService for the N1 TV box that only
+monitors the official YouTube TV package (`com.google.android.youtube.tv`).
 
-It clicks visible, enabled ad controls with these exact labels:
+The N1's Cobalt-based YouTube TV player does not expose its ad controls through
+Android's accessibility tree. This app therefore:
 
-- 隐藏广告 / 隱藏廣告 / Hide ad
-- 关闭广告面板 / 關閉廣告面板 / Close ad panel
-- 跳过广告 / 跳過廣告 / Skip ad / Skip ads
+- checks only while YouTube TV is in the foreground;
+- takes a low-frequency root screenshot;
+- detects the active white Skip button at the bottom-right;
+- sends the same DPAD_CENTER key as the remote control.
 
-The service does not handle other packages and does not click advertisement
-content or “Learn more” actions.
+It does not traverse or click inaccessible nodes and does not monitor other apps.
 
 ## Compatibility
 
 - Android 7.0 and newer
 - Tested target: Android 9 (API 28), 32-bit `armeabi-v7a`
 - Official YouTube TV package
+- Root access through `su`
 
 ## Build
 
@@ -33,3 +35,5 @@ io.github.leowood2000.youtubetvadcloser/.YouTubeAdCloserService
 
 Then set `accessibility_enabled` to `1`.
 
+SuperSU asks for root access the first time screen detection starts. Grant it
+permanently for unattended operation.

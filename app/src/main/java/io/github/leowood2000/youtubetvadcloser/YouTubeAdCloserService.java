@@ -1,169 +1,208 @@
 package io.github.leowood2000.youtubetvadcloser;
 
 import android.accessibilityservice.AccessibilityService;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.os.SystemClock;
 import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 
-import java.util.Arrays;
-import java.util.HashSet;
+import java.io.IOException;
+import java.io.InputStream;
 import java.util.Locale;
-import java.util.Set;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 public final class YouTubeAdCloserService extends AccessibilityService {
     private static final String TAG = "YTAdCloser";
     private static final String YOUTUBE_PACKAGE = "com.google.android.youtube.tv";
-    private static final long EVENT_THROTTLE_MS = 180;
-    private static final long CLICK_DEBOUNCE_MS = 1400;
 
-    private static final Set<String> HIDE_AD_LABELS = new HashSet<>(Arrays.asList(
-            "隐藏广告",
-            "隱藏廣告",
-            "hide ad",
-            "关闭广告面板",
-            "關閉廣告面板",
-            "close ad panel"
-    ));
+    private static final long SCREEN_SCAN_INTERVAL_MS = 3000;
+    private static final long CLICK_DEBOUNCE_MS = 5000;
 
-    private static final Set<String> SKIP_AD_LABELS = new HashSet<>(Arrays.asList(
-            "跳过广告",
-            "跳過廣告",
-            "跳过",
-            "跳過",
-            "skip ad",
-            "skip ads",
-            "skip"
-    ));
+    // On the N1's 1920x1080 Cobalt UI, the active Skip button is a large white
+    // pill in this normalized area. The unavailable countdown is dark.
+    private static final double REGION_LEFT = 0.85;
+    private static final double REGION_RIGHT = 0.92;
+    private static final double REGION_TOP = 0.875;
+    private static final double REGION_BOTTOM = 0.93;
+    private static final double ACTIVE_WHITE_RATIO = 0.55;
 
-    private long lastEventAt;
+    private ScheduledExecutorService screenScanner;
     private long lastClickAt;
-    private String lastClickedLabel = "";
+    private boolean rootFailureLogged;
 
     @Override
     protected void onServiceConnected() {
         super.onServiceConnected();
-        Log.i(TAG, "Service connected; monitoring YouTube TV only");
+        startScreenScanner();
+        Log.i(TAG, "Service connected; root visual skip detection enabled");
     }
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
-        if (event == null || event.getPackageName() == null) {
-            return;
-        }
-        if (!YOUTUBE_PACKAGE.contentEquals(event.getPackageName())) {
-            return;
-        }
+        // Cobalt draws the player UI onto a custom surface and exposes no useful
+        // button nodes. Events are intentionally not traversed.
+    }
 
-        int type = event.getEventType();
-        if (type != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED
-                && type != AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED
-                && type != AccessibilityEvent.TYPE_VIEW_FOCUSED) {
+    private void startScreenScanner() {
+        if (screenScanner != null && !screenScanner.isShutdown()) {
+            return;
+        }
+        screenScanner = Executors.newSingleThreadScheduledExecutor();
+        screenScanner.scheduleWithFixedDelay(
+                this::scanForSkipButton,
+                1000,
+                SCREEN_SCAN_INTERVAL_MS,
+                TimeUnit.MILLISECONDS
+        );
+    }
+
+    private void scanForSkipButton() {
+        if (!isYouTubeForeground()) {
             return;
         }
 
         long now = SystemClock.uptimeMillis();
-        if (now - lastEventAt < EVENT_THROTTLE_MS) {
+        if (now - lastClickAt < CLICK_DEBOUNCE_MS) {
             return;
         }
-        lastEventAt = now;
 
-        AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root == null) {
+        Bitmap screenshot = captureScreenAsRoot();
+        if (screenshot == null) {
             return;
         }
 
         try {
-            inspectTree(root);
+            double whiteRatio = skipButtonWhiteRatio(screenshot);
+            if (whiteRatio < ACTIVE_WHITE_RATIO) {
+                return;
+            }
+
+            if (runRootCommand("input keyevent 23")) {
+                lastClickAt = now;
+                Log.i(TAG, String.format(
+                        Locale.ROOT,
+                        "Skipped ad with DPAD_CENTER (white ratio %.3f)",
+                        whiteRatio
+                ));
+            }
+        } finally {
+            screenshot.recycle();
+        }
+    }
+
+    private boolean isYouTubeForeground() {
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null) {
+            return false;
+        }
+        try {
+            CharSequence packageName = root.getPackageName();
+            return packageName != null && YOUTUBE_PACKAGE.contentEquals(packageName);
         } finally {
             root.recycle();
         }
     }
 
-    private boolean inspectTree(AccessibilityNodeInfo node) {
-        if (node == null || !node.isVisibleToUser()) {
-            return false;
-        }
-
-        String label = nodeLabel(node);
-        if (isAdControlLabel(label) && clickNodeOrAncestor(node, label)) {
-            return true;
-        }
-
-        int childCount = node.getChildCount();
-        for (int index = 0; index < childCount; index++) {
-            AccessibilityNodeInfo child = node.getChild(index);
-            if (child == null) {
-                continue;
-            }
-            try {
-                if (inspectTree(child)) {
-                    return true;
-                }
-            } finally {
-                child.recycle();
-            }
-        }
-        return false;
-    }
-
-    private boolean clickNodeOrAncestor(AccessibilityNodeInfo original, String label) {
-        long now = SystemClock.uptimeMillis();
-        if (label.equals(lastClickedLabel) && now - lastClickAt < CLICK_DEBOUNCE_MS) {
-            return false;
-        }
-
-        AccessibilityNodeInfo current = AccessibilityNodeInfo.obtain(original);
+    private Bitmap captureScreenAsRoot() {
+        Process process = null;
         try {
-            for (int depth = 0; depth <= 4 && current != null; depth++) {
-                if (current.isVisibleToUser() && current.isEnabled() && current.isClickable()) {
-                    boolean clicked = current.performAction(AccessibilityNodeInfo.ACTION_CLICK);
-                    if (clicked) {
-                        lastClickedLabel = label;
-                        lastClickAt = now;
-                        Log.i(TAG, "Clicked YouTube ad control: " + label);
-                        current.recycle();
-                        current = null;
-                        return true;
-                    }
-                }
-
-                AccessibilityNodeInfo parent = current.getParent();
-                current.recycle();
-                current = parent;
+            process = new ProcessBuilder("su", "-c", "screencap -p").start();
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inSampleSize = 2;
+            Bitmap bitmap;
+            try (InputStream output = process.getInputStream()) {
+                bitmap = BitmapFactory.decodeStream(output, null, options);
             }
+            int exitCode = process.waitFor();
+            if (exitCode == 0 && bitmap != null) {
+                rootFailureLogged = false;
+                return bitmap;
+            }
+            if (bitmap != null) {
+                bitmap.recycle();
+            }
+            logRootFailureOnce("Root screenshot failed with exit code " + exitCode);
+        } catch (IOException exception) {
+            logRootFailureOnce("Root screenshot failed: " + exception.getMessage());
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
         } finally {
-            if (current != null) {
-                current.recycle();
+            if (process != null) {
+                process.destroy();
+            }
+        }
+        return null;
+    }
+
+    private static double skipButtonWhiteRatio(Bitmap bitmap) {
+        int width = bitmap.getWidth();
+        int height = bitmap.getHeight();
+        int left = (int) (width * REGION_LEFT);
+        int right = (int) (width * REGION_RIGHT);
+        int top = (int) (height * REGION_TOP);
+        int bottom = (int) (height * REGION_BOTTOM);
+
+        int sampled = 0;
+        int white = 0;
+        for (int y = top; y < bottom; y += 2) {
+            for (int x = left; x < right; x += 2) {
+                int color = bitmap.getPixel(x, y);
+                int red = (color >> 16) & 0xff;
+                int green = (color >> 8) & 0xff;
+                int blue = color & 0xff;
+                sampled++;
+                if (red >= 235 && green >= 235 && blue >= 235) {
+                    white++;
+                }
+            }
+        }
+        return sampled == 0 ? 0 : (double) white / sampled;
+    }
+
+    private boolean runRootCommand(String command) {
+        Process process = null;
+        try {
+            process = new ProcessBuilder("su", "-c", command).start();
+            int exitCode = process.waitFor();
+            if (exitCode == 0) {
+                rootFailureLogged = false;
+                return true;
+            }
+            logRootFailureOnce("Root input failed with exit code " + exitCode);
+        } catch (IOException exception) {
+            logRootFailureOnce("Root input failed: " + exception.getMessage());
+        } catch (InterruptedException exception) {
+            Thread.currentThread().interrupt();
+        } finally {
+            if (process != null) {
+                process.destroy();
             }
         }
         return false;
     }
 
-    private static boolean isAdControlLabel(String label) {
-        return !label.isEmpty()
-                && (HIDE_AD_LABELS.contains(label) || SKIP_AD_LABELS.contains(label));
-    }
-
-    private static String nodeLabel(AccessibilityNodeInfo node) {
-        CharSequence description = node.getContentDescription();
-        if (description != null && description.length() > 0) {
-            return normalize(description);
+    private void logRootFailureOnce(String message) {
+        if (!rootFailureLogged) {
+            rootFailureLogged = true;
+            Log.e(TAG, message);
         }
-
-        CharSequence text = node.getText();
-        if (text != null && text.length() > 0) {
-            return normalize(text);
-        }
-        return "";
-    }
-
-    private static String normalize(CharSequence value) {
-        return value.toString().trim().toLowerCase(Locale.ROOT);
     }
 
     @Override
     public void onInterrupt() {
         Log.w(TAG, "Service interrupted");
+    }
+
+    @Override
+    public void onDestroy() {
+        if (screenScanner != null) {
+            screenScanner.shutdownNow();
+            screenScanner = null;
+        }
+        super.onDestroy();
     }
 }
