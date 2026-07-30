@@ -44,6 +44,7 @@ public final class YouTubeAdCloserService extends AccessibilityService {
     private static final double CC_BUTTON_PRESENT_RATIO = 0.07;
     private static final double CC_ENABLED_WHITE_RATIO = 0.42;
     private static final double MAIN_TIMELINE_BRIGHT_RATIO = 0.025;
+    private static final double AD_COUNTDOWN_YELLOW_RATIO = 0.005;
 
     private ScheduledExecutorService screenScanner;
     private long lastClickAt;
@@ -52,6 +53,7 @@ public final class YouTubeAdCloserService extends AccessibilityService {
     private boolean rootFailureLogged;
     private boolean skipButtonLatched;
     private boolean captionRestorePending;
+    private boolean adObserved;
 
     @Override
     protected void onServiceConnected() {
@@ -101,7 +103,22 @@ public final class YouTubeAdCloserService extends AccessibilityService {
         boolean shouldCheckCaptions = false;
         try {
             double whiteRatio = skipButtonWhiteRatio(screenshot);
-            if (whiteRatio < ACTIVE_WHITE_RATIO) {
+            double yellowRatio = adCountdownYellowRatio(screenshot);
+            boolean skipButtonActive = whiteRatio >= ACTIVE_WHITE_RATIO;
+            boolean adVisible = skipButtonActive
+                    || yellowRatio >= AD_COUNTDOWN_YELLOW_RATIO;
+
+            if (adVisible) {
+                adObserved = true;
+            } else if (adObserved) {
+                adObserved = false;
+                captionRestorePending = true;
+                nextCaptionCheckAt = now + 1000;
+                captionRestoreDeadlineAt = now + CAPTION_RESTORE_TIMEOUT_MS;
+                Log.i(TAG, "Ad ended; caption restore queued");
+            }
+
+            if (!skipButtonActive) {
                 skipButtonLatched = false;
                 shouldCheckCaptions = captionRestorePending
                         && now >= nextCaptionCheckAt;
@@ -198,6 +215,34 @@ public final class YouTubeAdCloserService extends AccessibilityService {
             }
         }
         return sampled == 0 ? 0 : (double) white / sampled;
+    }
+
+    private static double adCountdownYellowRatio(Bitmap bitmap) {
+        int width = bitmap.getWidth();
+        int height = bitmap.getHeight();
+        int left = (int) (width * 0.91);
+        int right = width;
+        int top = (int) (height * 0.83);
+        int bottom = (int) (height * 0.98);
+
+        int sampled = 0;
+        int yellow = 0;
+        for (int y = top; y < bottom; y += 2) {
+            for (int x = left; x < right; x += 2) {
+                int color = bitmap.getPixel(x, y);
+                int red = (color >> 16) & 0xff;
+                int green = (color >> 8) & 0xff;
+                int blue = color & 0xff;
+                sampled++;
+                if (red >= 180
+                        && green >= 120
+                        && green <= 220
+                        && blue <= 60) {
+                    yellow++;
+                }
+            }
+        }
+        return sampled == 0 ? 0 : (double) yellow / sampled;
     }
 
     private void checkAndRestoreCaptions(long now) {

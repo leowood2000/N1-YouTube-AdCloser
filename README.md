@@ -10,8 +10,8 @@ Android's accessibility tree. This app therefore:
 - takes a low-frequency root screenshot;
 - detects the active white Skip button at the bottom-right;
 - sends the same DPAD_CENTER key as the remote control;
-- checks the CC indicator after a skip and restores captions when YouTube has
-  turned them off, then resumes playback.
+- checks the CC indicator after skipped or naturally completed ads and restores
+  captions when YouTube has turned them off, then resumes playback.
 
 It does not traverse or click inaccessible nodes and does not monitor other apps.
 
