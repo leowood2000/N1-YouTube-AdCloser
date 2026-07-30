@@ -86,12 +86,15 @@ public final class YouTubeAdCloserService extends AccessibilityService {
                 return;
             }
 
-            if (runRootCommand("input keyevent 23")) {
+            if (runRootCommand(
+                    "input keyevent 22; sleep 0.2; "
+                            + "input keyevent 22; sleep 0.2; "
+                            + "input keyevent 23")) {
                 lastClickAt = now;
                 skipButtonLatched = true;
                 Log.i(TAG, String.format(
                         Locale.ROOT,
-                        "Skipped ad with DPAD_CENTER (white ratio %.3f)",
+                        "Skipped ad with RIGHT, RIGHT, CENTER (white ratio %.3f)",
                         whiteRatio
                 ));
             }
