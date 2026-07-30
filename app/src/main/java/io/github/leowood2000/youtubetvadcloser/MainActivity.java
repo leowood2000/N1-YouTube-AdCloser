@@ -9,8 +9,11 @@ import android.view.Gravity;
 import android.view.ViewGroup;
 import android.widget.TextView;
 
+import java.io.IOException;
+
 public final class MainActivity extends Activity {
     private TextView statusView;
+    private boolean rootRequested;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -36,6 +39,35 @@ public final class MainActivity extends Activity {
         statusView.setText(enabled
                 ? getString(R.string.status_enabled)
                 : getString(R.string.status_disabled));
+        requestRootInForeground();
+    }
+
+    private void requestRootInForeground() {
+        if (rootRequested) {
+            return;
+        }
+        rootRequested = true;
+        new Thread(() -> {
+            boolean granted = false;
+            Process process = null;
+            try {
+                process = new ProcessBuilder("su", "-c", "id").start();
+                granted = process.waitFor() == 0;
+            } catch (IOException exception) {
+                // The status below tells the user that root was unavailable.
+            } catch (InterruptedException exception) {
+                Thread.currentThread().interrupt();
+            } finally {
+                if (process != null) {
+                    process.destroy();
+                }
+            }
+
+            final boolean rootGranted = granted;
+            runOnUiThread(() -> statusView.append(rootGranted
+                    ? getString(R.string.root_granted)
+                    : getString(R.string.root_denied)));
+        }, "RootPermissionRequest").start();
     }
 
     private boolean isServiceEnabled() {
@@ -57,4 +89,3 @@ public final class MainActivity extends Activity {
         return false;
     }
 }
-

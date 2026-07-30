@@ -5,4 +5,6 @@
     <string name="service_description">仅在官方 YouTube TV 位于前台时，以 root 截屏识别并按下可用的跳过按钮。</string>
     <string name="status_enabled">服务已启用\n\n仅在官方 YouTube TV 位于前台时检测右下角白色“跳过”按钮，并发送遥控器确认键。\n\n首次运行请在 SuperSU 中授权。</string>
     <string name="status_disabled">服务尚未启用。\n\n请在系统无障碍设置中启用“YouTube TV 广告关闭服务”。</string>
+    <string name="root_granted">\n\nroot 权限：已授权</string>
+    <string name="root_denied">\n\nroot 权限：未授权，请重新打开应用并在 SuperSU 中选择“授权”。</string>
 </resources>
