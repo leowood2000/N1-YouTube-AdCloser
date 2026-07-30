@@ -307,17 +307,20 @@ public final class YouTubeAdCloserService extends AccessibilityService {
         }
 
         // RIGHT then LEFT enters seek mode without changing the final playback
-        // position. OK confirms seeking and leaves focus on Play/Pause. CC is
-        // seven buttons to the right. BACK closes the controls and lets
-        // playback continue, matching the physical remote workflow.
+        // position. OK confirms seeking and enters the button row. YouTube
+        // remembers the previous button focus, so move RIGHT past every button
+        // to clamp at the rightmost Settings button, then LEFT once to CC.
+        // BACK closes the controls, matching the physical remote workflow.
         StringBuilder command = new StringBuilder();
         appendKeyPress(command, eventPath, 106); // DPAD_RIGHT
         appendKeyPress(command, eventPath, 105); // DPAD_LEFT
         appendKeyPress(command, eventPath, 28);  // DPAD_CENTER
-        for (int index = 0; index < 7; index++) {
+        for (int index = 0; index < 12; index++) {
             appendKeyPress(command, eventPath, 106);
         }
+        appendKeyPress(command, eventPath, 105); // Settings -> CC
         appendKeyPress(command, eventPath, 28);  // Enable CC
+        command.append("sleep 0.60; ");
         appendKeyPress(command, eventPath, 158); // BACK
 
         if (runRootCommand(command.toString())) {
