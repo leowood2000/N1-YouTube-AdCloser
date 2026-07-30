@@ -8,6 +8,8 @@ import android.util.Log;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 
+import java.io.BufferedReader;
+import java.io.FileReader;
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Locale;
@@ -86,15 +88,12 @@ public final class YouTubeAdCloserService extends AccessibilityService {
                 return;
             }
 
-            if (runRootCommand(
-                    "input keyevent 22; sleep 0.2; "
-                            + "input keyevent 22; sleep 0.2; "
-                            + "input keyevent 23")) {
+            if (pressPhysicalRemoteOk()) {
                 lastClickAt = now;
                 skipButtonLatched = true;
                 Log.i(TAG, String.format(
                         Locale.ROOT,
-                        "Skipped ad with RIGHT, RIGHT, CENTER (white ratio %.3f)",
+                        "Pressed physical remote OK for skip button (white ratio %.3f)",
                         whiteRatio
                 ));
             }
@@ -170,6 +169,54 @@ public final class YouTubeAdCloserService extends AccessibilityService {
             }
         }
         return sampled == 0 ? 0 : (double) white / sampled;
+    }
+
+    private boolean pressPhysicalRemoteOk() {
+        String eventPath = findPhicommRemoteEventPath();
+        if (eventPath == null) {
+            logRootFailureOnce("Phicomm remote input device not found");
+            return false;
+        }
+
+        String command = "sendevent " + eventPath + " 1 28 1; "
+                + "sendevent " + eventPath + " 0 0 0; "
+                + "sleep 0.12; "
+                + "sendevent " + eventPath + " 1 28 0; "
+                + "sendevent " + eventPath + " 0 0 0";
+        return runRootCommand(command);
+    }
+
+    private static String findPhicommRemoteEventPath() {
+        boolean isPhicommRemote = false;
+        try (BufferedReader reader = new BufferedReader(
+                new FileReader("/proc/bus/input/devices"))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (line.startsWith("N: Name=")) {
+                    isPhicommRemote = line.contains("斐讯遥控器");
+                    continue;
+                }
+                if (line.isEmpty()) {
+                    isPhicommRemote = false;
+                    continue;
+                }
+                if (!isPhicommRemote || !line.startsWith("H: Handlers=")) {
+                    continue;
+                }
+
+                String[] handlers = line.substring("H: Handlers=".length())
+                        .trim()
+                        .split("\\s+");
+                for (String handler : handlers) {
+                    if (handler.matches("event\\d+")) {
+                        return "/dev/input/" + handler;
+                    }
+                }
+            }
+        } catch (IOException exception) {
+            Log.e(TAG, "Unable to read input device list", exception);
+        }
+        return null;
     }
 
     private boolean runRootCommand(String command) {
