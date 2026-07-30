@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">YouTube TV 跳广告</string>
+    <string name="service_name">YouTube TV 广告关闭服务</string>
+    <string name="service_description">仅在官方 YouTube TV 中关闭暂停广告面板并点击可用的跳过广告按钮。</string>
+    <string name="status_enabled">服务已启用\n\n正在监控官方 YouTube TV：\n• 隐藏广告 / Hide ad\n• 关闭广告面板 / Close ad panel\n• 跳过广告 / Skip ad\n\n不会处理其他应用，也不会点击广告内容。</string>
+    <string name="status_disabled">服务尚未启用。\n\n请在系统无障碍设置中启用“YouTube TV 广告关闭服务”。</string>
+</resources>
+
