@@ -23,9 +23,6 @@ public final class YouTubeAdCloserService extends AccessibilityService {
 
     private static final long SCREEN_SCAN_INTERVAL_MS = 1400;
     private static final long CLICK_DEBOUNCE_MS = 5000;
-    private static final long CAPTION_CHECK_DELAY_MS = 2800;
-    private static final long CAPTION_RETRY_INTERVAL_MS = 3000;
-    private static final long CAPTION_RESTORE_TIMEOUT_MS = 30000;
 
     // On the N1's 1920x1080 Cobalt UI, the active Skip button is a large white
     // pill in this normalized area. The unavailable countdown is dark.
@@ -36,23 +33,12 @@ public final class YouTubeAdCloserService extends AccessibilityService {
     private static final double ACTIVE_WHITE_RATIO = 0.55;
     private static final double PLAYBACK_SURFACE_DARK_RATIO = 0.90;
 
-    // The CC icon is filled white while captions are enabled and is only a
-    // white outline while they are disabled.
-    private static final double CC_REGION_LEFT = 0.886;
-    private static final double CC_REGION_RIGHT = 0.902;
-    private static final double CC_REGION_TOP = 0.719;
-    private static final double CC_REGION_BOTTOM = 0.742;
-    private static final double CC_BUTTON_PRESENT_RATIO = 0.07;
-    private static final double CC_ENABLED_WHITE_RATIO = 0.42;
     private static final double MAIN_TIMELINE_BRIGHT_RATIO = 0.025;
 
     private ScheduledExecutorService screenScanner;
     private long lastClickAt;
-    private long nextCaptionCheckAt;
-    private long captionRestoreDeadlineAt;
     private boolean rootFailureLogged;
     private boolean skipButtonLatched;
-    private boolean captionRestorePending;
 
     @Override
     protected void onServiceConnected() {
@@ -86,10 +72,6 @@ public final class YouTubeAdCloserService extends AccessibilityService {
         }
 
         long now = SystemClock.uptimeMillis();
-        if (captionRestorePending && now >= captionRestoreDeadlineAt) {
-            captionRestorePending = false;
-            Log.i(TAG, "Caption restore timed out while another ad was active");
-        }
         if (now - lastClickAt < CLICK_DEBOUNCE_MS) {
             return;
         }
@@ -99,7 +81,6 @@ public final class YouTubeAdCloserService extends AccessibilityService {
             return;
         }
 
-        boolean shouldCheckCaptions = false;
         try {
             double whiteRatio = skipButtonWhiteRatio(screenshot);
             double darkRatio = playbackSurfaceDarkRatio(screenshot);
@@ -112,18 +93,13 @@ public final class YouTubeAdCloserService extends AccessibilityService {
 
             if (!skipButtonActive) {
                 skipButtonLatched = false;
-                shouldCheckCaptions = captionRestorePending
-                        && now >= nextCaptionCheckAt;
             } else if (!skipButtonLatched) {
                 String eventPath = findPhicommRemoteEventPath();
                 if (eventPath == null) {
                     logRootFailureOnce("Phicomm remote input device not found");
-                } else if (pressPhysicalRemoteKey(eventPath, 28)) {
+                } else if (pressPhysicalRemoteOk(eventPath)) {
                     lastClickAt = now;
                     skipButtonLatched = true;
-                    captionRestorePending = true;
-                    nextCaptionCheckAt = now + CAPTION_CHECK_DELAY_MS;
-                    captionRestoreDeadlineAt = now + CAPTION_RESTORE_TIMEOUT_MS;
                     Log.i(TAG, String.format(
                             Locale.ROOT,
                             "Pressed physical remote OK for skip button (white ratio %.3f)",
@@ -133,10 +109,6 @@ public final class YouTubeAdCloserService extends AccessibilityService {
             }
         } finally {
             screenshot.recycle();
-        }
-
-        if (shouldCheckCaptions) {
-            checkAndRestoreCaptions(now);
         }
     }
 
@@ -234,96 +206,6 @@ public final class YouTubeAdCloserService extends AccessibilityService {
         return sampled == 0 ? 0 : (double) dark / sampled;
     }
 
-    private void checkAndRestoreCaptions(long now) {
-        String eventPath = findPhicommRemoteEventPath();
-        if (eventPath == null) {
-            logRootFailureOnce("Phicomm remote input device not found");
-            nextCaptionCheckAt = now + CAPTION_RETRY_INTERVAL_MS;
-            return;
-        }
-        if (!isYouTubeForeground() || !pressPhysicalRemoteKey(eventPath, 28)) {
-            nextCaptionCheckAt = now + CAPTION_RETRY_INTERVAL_MS;
-            return;
-        }
-
-        SystemClock.sleep(500);
-        Bitmap controls = captureScreenAsRoot();
-        if (controls == null) {
-            nextCaptionCheckAt = now + CAPTION_RETRY_INTERVAL_MS;
-            return;
-        }
-
-        double timelineRatio;
-        double whiteRatio;
-        try {
-            timelineRatio = mainTimelineBrightRatio(controls);
-            whiteRatio = captionButtonWhiteRatio(controls);
-        } finally {
-            controls.recycle();
-        }
-
-        if (timelineRatio < MAIN_TIMELINE_BRIGHT_RATIO) {
-            pressPhysicalRemoteKey(eventPath, 158);
-            nextCaptionCheckAt = now + CAPTION_RETRY_INTERVAL_MS;
-            Log.i(TAG, String.format(
-                    Locale.ROOT,
-                    "Waiting for main video before caption restore "
-                            + "(timeline ratio %.3f)",
-                    timelineRatio
-            ));
-            return;
-        }
-
-        if (whiteRatio >= CC_ENABLED_WHITE_RATIO) {
-            pressPhysicalRemoteKey(eventPath, 158);
-            captionRestorePending = false;
-            Log.i(TAG, String.format(
-                    Locale.ROOT,
-                    "Captions already enabled (CC white ratio %.3f)",
-                    whiteRatio
-            ));
-            return;
-        }
-        if (whiteRatio < CC_BUTTON_PRESENT_RATIO) {
-            pressPhysicalRemoteKey(eventPath, 158);
-            captionRestorePending = false;
-            Log.i(TAG, String.format(
-                    Locale.ROOT,
-                    "No CC button detected after skip (white ratio %.3f)",
-                    whiteRatio
-            ));
-            return;
-        }
-
-        // RIGHT then LEFT enters seek mode without changing the final playback
-        // position. OK confirms seeking and enters the button row. YouTube
-        // remembers the previous button focus, so move RIGHT past every button
-        // to clamp at the rightmost Settings button, then LEFT once to CC.
-        // BACK closes the controls, matching the physical remote workflow.
-        StringBuilder command = new StringBuilder();
-        appendKeyPress(command, eventPath, 106); // DPAD_RIGHT
-        appendKeyPress(command, eventPath, 105); // DPAD_LEFT
-        appendKeyPress(command, eventPath, 28);  // DPAD_CENTER
-        for (int index = 0; index < 12; index++) {
-            appendKeyPress(command, eventPath, 106);
-        }
-        appendKeyPress(command, eventPath, 105); // Settings -> CC
-        appendKeyPress(command, eventPath, 28);  // Enable CC
-        command.append("sleep 0.60; ");
-        appendKeyPress(command, eventPath, 158); // BACK
-
-        if (runRootCommand(command.toString())) {
-            captionRestorePending = false;
-            Log.i(TAG, String.format(
-                    Locale.ROOT,
-                    "Restored captions after skip (CC white ratio %.3f)",
-                    whiteRatio
-            ));
-        } else {
-            nextCaptionCheckAt = now + CAPTION_RETRY_INTERVAL_MS;
-        }
-    }
-
     private static double mainTimelineBrightRatio(Bitmap bitmap) {
         double leftTime = brightPixelRatio(
                 bitmap,
@@ -373,50 +255,13 @@ public final class YouTubeAdCloserService extends AccessibilityService {
         return sampled == 0 ? 0 : (double) bright / sampled;
     }
 
-    private static double captionButtonWhiteRatio(Bitmap bitmap) {
-        int width = bitmap.getWidth();
-        int height = bitmap.getHeight();
-        int left = (int) (width * CC_REGION_LEFT);
-        int right = (int) (width * CC_REGION_RIGHT);
-        int top = (int) (height * CC_REGION_TOP);
-        int bottom = (int) (height * CC_REGION_BOTTOM);
-
-        int sampled = 0;
-        int white = 0;
-        for (int y = top; y < bottom; y++) {
-            for (int x = left; x < right; x++) {
-                int color = bitmap.getPixel(x, y);
-                int red = (color >> 16) & 0xff;
-                int green = (color >> 8) & 0xff;
-                int blue = color & 0xff;
-                sampled++;
-                if (red >= 235 && green >= 235 && blue >= 235) {
-                    white++;
-                }
-            }
-        }
-        return sampled == 0 ? 0 : (double) white / sampled;
-    }
-
-    private boolean pressPhysicalRemoteKey(String eventPath, int scanCode) {
-        StringBuilder command = new StringBuilder();
-        appendKeyPress(command, eventPath, scanCode);
-        return runRootCommand(command.toString());
-    }
-
-    private static void appendKeyPress(
-            StringBuilder command,
-            String eventPath,
-            int scanCode
-    ) {
-        command.append("sendevent ").append(eventPath)
-                .append(" 1 ").append(scanCode).append(" 1; ")
-                .append("sendevent ").append(eventPath).append(" 0 0 0; ")
-                .append("sleep 0.10; ")
-                .append("sendevent ").append(eventPath)
-                .append(" 1 ").append(scanCode).append(" 0; ")
-                .append("sendevent ").append(eventPath).append(" 0 0 0; ")
-                .append("sleep 0.18; ");
+    private boolean pressPhysicalRemoteOk(String eventPath) {
+        String command = "sendevent " + eventPath + " 1 28 1; "
+                + "sendevent " + eventPath + " 0 0 0; "
+                + "sleep 0.12; "
+                + "sendevent " + eventPath + " 1 28 0; "
+                + "sendevent " + eventPath + " 0 0 0";
+        return runRootCommand(command);
     }
 
     private static String findPhicommRemoteEventPath() {

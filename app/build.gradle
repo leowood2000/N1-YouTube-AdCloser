@@ -10,8 +10,8 @@ android {
         applicationId "io.github.leowood2000.youtubetvadcloser"
         minSdk 24
         targetSdk 28
-        versionCode 12
-        versionName "1.1.10"
+        versionCode 13
+        versionName "1.1.11"
     }
 
     buildTypes {
