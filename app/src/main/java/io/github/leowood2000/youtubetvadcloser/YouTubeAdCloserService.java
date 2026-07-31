@@ -1,10 +1,16 @@
 package io.github.leowood2000.youtubetvadcloser;
 
 import android.accessibilityservice.AccessibilityService;
+import android.accessibilityservice.AccessibilityServiceInfo;
+import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
+import android.media.AudioManager;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.SystemClock;
 import android.util.Log;
+import android.view.KeyEvent;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 
@@ -36,6 +42,19 @@ public final class YouTubeAdCloserService extends AccessibilityService {
     private static final double MAIN_TIMELINE_BRIGHT_RATIO = 0.025;
 
     private ScheduledExecutorService screenScanner;
+    private AudioManager audioManager;
+    private final Handler volumeHandler = new Handler(Looper.getMainLooper());
+    private int heldVolumeKey = KeyEvent.KEYCODE_UNKNOWN;
+    private final Runnable repeatVolume = new Runnable() {
+        @Override
+        public void run() {
+            if (heldVolumeKey == KeyEvent.KEYCODE_VOLUME_UP
+                    || heldVolumeKey == KeyEvent.KEYCODE_VOLUME_DOWN) {
+                changeMediaVolume(heldVolumeKey);
+                volumeHandler.postDelayed(this, 100);
+            }
+        }
+    };
     private long lastClickAt;
     private boolean rootFailureLogged;
     private boolean skipButtonLatched;
@@ -43,8 +62,54 @@ public final class YouTubeAdCloserService extends AccessibilityService {
     @Override
     protected void onServiceConnected() {
         super.onServiceConnected();
+        AccessibilityServiceInfo info = getServiceInfo();
+        info.flags |= AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS;
+        setServiceInfo(info);
+        audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
         startScreenScanner();
-        Log.i(TAG, "Service connected; root visual skip detection enabled");
+        Log.i(TAG, "Service connected; ad skip and volume key fix enabled");
+    }
+
+    @Override
+    protected boolean onKeyEvent(KeyEvent event) {
+        int keyCode = event.getKeyCode();
+        if (keyCode != KeyEvent.KEYCODE_VOLUME_UP
+                && keyCode != KeyEvent.KEYCODE_VOLUME_DOWN) {
+            return false;
+        }
+
+        if (event.getAction() == KeyEvent.ACTION_DOWN
+                && event.getRepeatCount() == 0) {
+            heldVolumeKey = keyCode;
+            volumeHandler.removeCallbacks(repeatVolume);
+            changeMediaVolume(keyCode);
+            volumeHandler.postDelayed(repeatVolume, 400);
+        } else if (event.getAction() == KeyEvent.ACTION_UP) {
+            stopVolumeRepeat();
+        }
+        return true;
+    }
+
+    private void changeMediaVolume(int keyCode) {
+        if (audioManager == null) {
+            audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+        }
+        int current = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC);
+        int maximum = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+        int target = keyCode == KeyEvent.KEYCODE_VOLUME_UP
+                ? Math.min(current + 1, maximum)
+                : Math.max(current - 1, 0);
+        audioManager.setStreamVolume(
+                AudioManager.STREAM_MUSIC,
+                target,
+                AudioManager.FLAG_SHOW_UI
+        );
+        Log.i(TAG, "Volume key " + keyCode + ": " + current + " -> " + target);
+    }
+
+    private void stopVolumeRepeat() {
+        heldVolumeKey = KeyEvent.KEYCODE_UNKNOWN;
+        volumeHandler.removeCallbacks(repeatVolume);
     }
 
     @Override
@@ -328,11 +393,13 @@ public final class YouTubeAdCloserService extends AccessibilityService {
 
     @Override
     public void onInterrupt() {
+        stopVolumeRepeat();
         Log.w(TAG, "Service interrupted");
     }
 
     @Override
     public void onDestroy() {
+        stopVolumeRepeat();
         if (screenScanner != null) {
             screenScanner.shutdownNow();
             screenScanner = null;
