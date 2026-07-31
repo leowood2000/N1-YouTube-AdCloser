@@ -4,4 +4,5 @@ local.properties
 build/
 app/build/
 artifacts*/
+*.apk
 *.iml

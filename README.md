@@ -1,4 +1,4 @@
-# N1 YouTube TV Ad Closer
+# N1 YouTube TV Ad Closer + Volume Key Fix
 
 A small root-assisted Android AccessibilityService for the N1 TV box that only
 monitors the official YouTube TV package (`com.google.android.youtube.tv`).
@@ -10,8 +10,21 @@ Android's accessibility tree. This app therefore:
 - takes a low-frequency root screenshot;
 - detects the active white Skip button at the bottom-right;
 - sends the same DPAD_CENTER key as the remote control.
+- intercepts `KEYCODE_VOLUME_UP/DOWN` before YouTube consumes them;
+- adjusts `STREAM_MUSIC` directly, including long-press repeat.
 
-It does not traverse or click inaccessible nodes and does not monitor other apps.
+It does not traverse or click inaccessible nodes and only monitors YouTube TV.
+
+## Volume controls
+
+- Single press changes media volume by one step.
+- Holding a volume key starts repeating after 400 ms.
+- Repeat interval is 100 ms and stops immediately on key release.
+- Other remote keys are not consumed.
+
+The service requests `FLAG_REQUEST_FILTER_KEY_EVENTS` both in XML and again
+programmatically. The programmatic request is required by some Android 9 TV
+firmware even when `canRequestFilterKeyEvents` is declared.
 
 ## Compatibility
 
