@@ -27,8 +27,13 @@ public final class YouTubeAdCloserService extends AccessibilityService {
     private static final String TAG = "YTAdCloser";
     private static final String YOUTUBE_PACKAGE = "com.google.android.youtube.tv";
 
-    private static final long SCREEN_SCAN_INTERVAL_MS = 1400;
+    // Let Cobalt finish its network and video initialization before the first
+    // root screencap.  The old 1.2.0 cadence added avoidable load during startup.
+    private static final long SCREEN_SCAN_START_DELAY_MS = 12000;
+    private static final long SCREEN_SCAN_INTERVAL_MS = 3000;
     private static final long CLICK_DEBOUNCE_MS = 5000;
+    private static final long ACCESSIBILITY_ACTION_DEBOUNCE_MS = 700;
+    private static final long SEGMENT_MENU_TIMEOUT_MS = 2500;
 
     // On the N1's 1920x1080 Cobalt UI, the active Skip button is a large white
     // pill in this normalized area. The unavailable countdown is dark.
@@ -56,6 +61,8 @@ public final class YouTubeAdCloserService extends AccessibilityService {
         }
     };
     private long lastClickAt;
+    private long lastAccessibilityActionAt;
+    private long segmentMenuOpenedAt;
     private boolean rootFailureLogged;
     private boolean skipButtonLatched;
 
@@ -63,8 +70,10 @@ public final class YouTubeAdCloserService extends AccessibilityService {
     protected void onServiceConnected() {
         super.onServiceConnected();
         AccessibilityServiceInfo info = getServiceInfo();
-        info.flags |= AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS;
-        setServiceInfo(info);
+        if (info != null) {
+            info.flags |= AccessibilityServiceInfo.FLAG_REQUEST_FILTER_KEY_EVENTS;
+            setServiceInfo(info);
+        }
         audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
         startScreenScanner();
         Log.i(TAG, "Service connected; ad skip and volume key fix enabled");
@@ -114,8 +123,262 @@ public final class YouTubeAdCloserService extends AccessibilityService {
 
     @Override
     public void onAccessibilityEvent(AccessibilityEvent event) {
-        // Cobalt draws the player UI onto a custom surface and exposes no useful
-        // button nodes. Events are intentionally not traversed.
+        if (event.getPackageName() == null
+                || !YOUTUBE_PACKAGE.contentEquals(event.getPackageName())) {
+            return;
+        }
+
+        // The GKD YouTube rules use these semantic controls:
+        // - skip_ad_button / modern_skip_ad_text: skip a full-screen video ad;
+        // - Close ad panel / panel_header: close a sponsor-ad panel;
+        // - collapsible_ad_cta_overlay_container -> overflow_button -> Close:
+        //   open the playback-page ad menu and select Close.
+        // The TV Cobalt build normally exposes none of these nodes, so the
+        // screenshot path below remains the fallback for the N1 surface.
+        applyGkdYouTubeRules();
+    }
+
+    private boolean applyGkdYouTubeRules() {
+        AccessibilityNodeInfo root = getRootInActiveWindow();
+        if (root == null) {
+            return false;
+        }
+
+        try {
+            long now = SystemClock.uptimeMillis();
+            if (now - lastAccessibilityActionAt < ACCESSIBILITY_ACTION_DEBOUNCE_MS) {
+                return false;
+            }
+
+            if (segmentMenuOpenedAt != 0
+                    && now - segmentMenuOpenedAt <= SEGMENT_MENU_TIMEOUT_MS) {
+                AccessibilityNodeInfo closeNode = findTextOrDescription(
+                        root, "关闭", "Close");
+                if (closeNode != null) {
+                    try {
+                        if (clickNodeOrClickableParent(closeNode)) {
+                            segmentMenuOpenedAt = 0;
+                            return true;
+                        }
+                    } finally {
+                        closeNode.recycle();
+                    }
+                }
+            } else {
+                segmentMenuOpenedAt = 0;
+            }
+
+            AccessibilityNodeInfo skipNode = findNodeByViewIdSuffix(
+                    root, "skip_ad_button");
+            if (skipNode == null) {
+                skipNode = findNodeByViewIdSuffix(root, "modern_skip_ad_text");
+            }
+            if (skipNode != null) {
+                try {
+                    if (clickNodeOrClickableParent(skipNode)) {
+                        return true;
+                    }
+                } finally {
+                    skipNode.recycle();
+                }
+            }
+
+            AccessibilityNodeInfo closePanelNode = findTextOrDescription(
+                    root, "关闭广告面板", "Close ad panel");
+            if (closePanelNode != null) {
+                try {
+                    if (clickNodeOrClickableParent(closePanelNode)) {
+                        return true;
+                    }
+                } finally {
+                    closePanelNode.recycle();
+                }
+            }
+
+            AccessibilityNodeInfo panelHeader = findNodeByViewIdSuffix(
+                    root, "panel_header");
+            if (panelHeader != null) {
+                try {
+                    if (containsAdLabel(panelHeader)) {
+                        AccessibilityNodeInfo lastClickable =
+                                findLastClickableDescendant(panelHeader);
+                        if (lastClickable != null) {
+                            try {
+                                if (clickNodeOrClickableParent(lastClickable)) {
+                                    return true;
+                                }
+                            } finally {
+                                lastClickable.recycle();
+                            }
+                        }
+                    }
+                } finally {
+                    panelHeader.recycle();
+                }
+            }
+
+            AccessibilityNodeInfo adOverlay = findNodeByViewIdSuffix(
+                    root, "collapsible_ad_cta_overlay_container");
+            if (adOverlay != null) {
+                try {
+                    AccessibilityNodeInfo overflow = findNodeByViewIdSuffix(
+                            adOverlay, "overflow_button");
+                    if (overflow != null) {
+                        try {
+                            if (clickNodeOrClickableParent(overflow)) {
+                                segmentMenuOpenedAt = now;
+                                return true;
+                            }
+                        } finally {
+                            overflow.recycle();
+                        }
+                    }
+                } finally {
+                    adOverlay.recycle();
+                }
+            }
+        } finally {
+            root.recycle();
+        }
+        return false;
+    }
+
+    private AccessibilityNodeInfo findNodeByViewIdSuffix(
+            AccessibilityNodeInfo node,
+            String suffix
+    ) {
+        String viewId = node.getViewIdResourceName();
+        if (viewId != null && viewId.endsWith("/" + suffix)) {
+            return AccessibilityNodeInfo.obtain(node);
+        }
+
+        for (int index = 0; index < node.getChildCount(); index++) {
+            AccessibilityNodeInfo child = node.getChild(index);
+            if (child == null) {
+                continue;
+            }
+            AccessibilityNodeInfo result = findNodeByViewIdSuffix(child, suffix);
+            child.recycle();
+            if (result != null) {
+                return result;
+            }
+        }
+        return null;
+    }
+
+    private AccessibilityNodeInfo findTextOrDescription(
+            AccessibilityNodeInfo node,
+            String... values
+    ) {
+        if (matchesTextOrDescription(node, values)) {
+            return AccessibilityNodeInfo.obtain(node);
+        }
+
+        for (int index = 0; index < node.getChildCount(); index++) {
+            AccessibilityNodeInfo child = node.getChild(index);
+            if (child == null) {
+                continue;
+            }
+            AccessibilityNodeInfo result = findTextOrDescription(child, values);
+            child.recycle();
+            if (result != null) {
+                return result;
+            }
+        }
+        return null;
+    }
+
+    private static boolean matchesTextOrDescription(
+            AccessibilityNodeInfo node,
+            String... values
+    ) {
+        CharSequence text = node.getText();
+        CharSequence description = node.getContentDescription();
+        for (String value : values) {
+            if ((text != null && value.contentEquals(text))
+                    || (description != null && value.contentEquals(description))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean containsAdLabel(AccessibilityNodeInfo node) {
+        CharSequence text = node.getText();
+        CharSequence description = node.getContentDescription();
+        if (isAdLabel(text) || isAdLabel(description)) {
+            return true;
+        }
+        for (int index = 0; index < node.getChildCount(); index++) {
+            AccessibilityNodeInfo child = node.getChild(index);
+            if (child == null) {
+                continue;
+            }
+            boolean found = containsAdLabel(child);
+            child.recycle();
+            if (found) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isAdLabel(CharSequence value) {
+        if (value == null) {
+            return false;
+        }
+        String label = value.toString().toLowerCase(Locale.ROOT);
+        return label.endsWith("广告") || label.contains("ad ");
+    }
+
+    private static AccessibilityNodeInfo findLastClickableDescendant(
+            AccessibilityNodeInfo node
+    ) {
+        AccessibilityNodeInfo result = null;
+        if (node.isClickable() && node.isVisibleToUser()) {
+            result = AccessibilityNodeInfo.obtain(node);
+        }
+        for (int index = 0; index < node.getChildCount(); index++) {
+            AccessibilityNodeInfo child = node.getChild(index);
+            if (child == null) {
+                continue;
+            }
+            AccessibilityNodeInfo childResult = findLastClickableDescendant(child);
+            child.recycle();
+            if (childResult != null) {
+                if (result != null) {
+                    result.recycle();
+                }
+                result = childResult;
+            }
+        }
+        return result;
+    }
+
+    private boolean clickNodeOrClickableParent(AccessibilityNodeInfo node) {
+        AccessibilityNodeInfo current = AccessibilityNodeInfo.obtain(node);
+        try {
+            for (int depth = 0; current != null && depth < 4; depth++) {
+                if (current.isVisibleToUser()
+                        && current.isEnabled()
+                        && current.isClickable()
+                        && current.performAction(
+                                AccessibilityNodeInfo.ACTION_CLICK)) {
+                    lastAccessibilityActionAt = SystemClock.uptimeMillis();
+                    lastClickAt = lastAccessibilityActionAt;
+                    Log.i(TAG, "Applied GKD YouTube ad rule via accessibility node");
+                    return true;
+                }
+                AccessibilityNodeInfo parent = current.getParent();
+                current.recycle();
+                current = parent;
+            }
+        } finally {
+            if (current != null) {
+                current.recycle();
+            }
+        }
+        return false;
     }
 
     private void startScreenScanner() {
@@ -125,7 +388,7 @@ public final class YouTubeAdCloserService extends AccessibilityService {
         screenScanner = Executors.newSingleThreadScheduledExecutor();
         screenScanner.scheduleWithFixedDelay(
                 this::scanForSkipButton,
-                1000,
+                SCREEN_SCAN_START_DELAY_MS,
                 SCREEN_SCAN_INTERVAL_MS,
                 TimeUnit.MILLISECONDS
         );
@@ -135,6 +398,11 @@ public final class YouTubeAdCloserService extends AccessibilityService {
         if (!isYouTubeForeground()) {
             return;
         }
+
+        // Prefer the exact GKD semantic targets when a future TV build
+        // exposes them. The current Cobalt build usually has an empty tree,
+        // so continue with the visual fallback below.
+        applyGkdYouTubeRules();
 
         long now = SystemClock.uptimeMillis();
         if (now - lastClickAt < CLICK_DEBOUNCE_MS) {
@@ -167,7 +435,8 @@ public final class YouTubeAdCloserService extends AccessibilityService {
                     skipButtonLatched = true;
                     Log.i(TAG, String.format(
                             Locale.ROOT,
-                            "Pressed physical remote OK for skip button (white ratio %.3f)",
+                            "Pressed physical remote OK for GKD-compatible ad skip action "
+                                    + "(white ratio %.3f)",
                             whiteRatio
                     ));
                 }

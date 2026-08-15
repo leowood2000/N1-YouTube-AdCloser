@@ -13,6 +13,11 @@ Android's accessibility tree. This app therefore:
 - intercepts `KEYCODE_VOLUME_UP/DOWN` before YouTube consumes them;
 - adjusts `STREAM_MUSIC` directly, including long-press repeat.
 
+When YouTube exposes an accessibility tree, it also applies the corresponding
+GKD rules for Skip ad, sponsor-ad panel close, and playback-page ad
+More -> Close. The current N1 Cobalt build exposes an empty custom-surface
+tree, so the screenshot fallback remains enabled.
+
 It does not traverse or click inaccessible nodes and only monitors YouTube TV.
 
 ## Volume controls
