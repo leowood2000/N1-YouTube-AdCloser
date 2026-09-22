@@ -14,15 +14,24 @@ Android's accessibility tree. This app:
 ## v1.3.0: screenshot fallback removed
 
 The root screenshot fallback (`screencap -p` every 3 s + pixel analysis +
-`sendevent`) was removed because it triggered a system_server crash loop on
-the N1 (Android 9, 32-bit ARM):
+`sendevent`) was removed after it acted as a reliable trigger for a
+system_server crash loop on the N1 (Android 9, 32-bit ARM):
 
-- each root screencap caused a window/surface state change;
-- system_server's `TaskSnapshotPersister` then saved a task snapshot;
-- `Bitmap.compress -> SkJpegEncoder -> libjpeg start_pass_huff` crashed with
-  SIGSEGV/SIGILL (N1 libjpeg entropy-heap corruption on YouTube snapshots);
+- the high-frequency root screencap/sendevent cycle repeatedly changed
+  window/surface state while system_server's `TaskSnapshotPersister`
+  saved task snapshots;
+- `Bitmap.compress -> SkJpegEncoder -> libjpeg start_pass_huff` then
+  crashed with SIGSEGV/SIGILL (same function, 16-byte offset apart);
 - system_server crashed -> runtime restart -> WiFi/VPN/YouTube dropped and
   `dropbox:netstats_error=disabled` was lost each cycle, feeding the loop.
+
+Note on scope: this is a proven trigger, not a proven root cause. The
+native memory corruption may originate in the screencap path, the window
+state transitions, the YouTube/Cobalt surface, the GraphicBuffer/vendor
+graphics stack, or the JPEG encoder itself; the corruption source has not
+been isolated. Also, the pre-reflash N1 likely never actually ran this
+scanner (the accessibility service binding was unverified before the
+2026-09-21 reflash), so "screenshots were fine before" is not supported.
 
 YouTube TV 5.30.320 (Cobalt) exposes an empty accessibility tree, so the GKD
 node path never matches on this build and the screenshot path ran every scan.
